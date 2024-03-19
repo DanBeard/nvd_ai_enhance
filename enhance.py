@@ -2,16 +2,17 @@ import json
 import time
 import textdistance
 import csv
+import traceback
 from langchain_community.document_loaders import WebBaseLoader
 import requests
-from bs4 import BeautifulSoup
+#from bs4 import BeautifulSoup
 from comparison_parser import turn_alg_into_nodes
 
 # settings
 #file_to_enhance = "./NVD_DATA/nvdcve-1.1-recent.json"
 file_to_enhance = "./NVD_DATA/nvdcve-1.1-2023.json"
 meta_info_output_file = "./stats-2023.csv" #write metainfo here for comparisons
-delay_every_secs = 0 # delay between CVEs so we don't hit rate limits
+delay_every_secs = 3 # delay between CVEs so we don't hit rate limits
 overwrite_cves_with_cpes = True # set to true to overwrite cves with cpes that already exist. Good for comparison/testing/metrics but not for actual use
 enhance_at_most = 1000 # limit for testing. raise to very large value for real use
 recalc_cpe_set = False # set to True to force a re-calc of Cpes
@@ -21,11 +22,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.globals import set_llm_cache
 from langchain.cache import SQLiteCache
 from langchain_community.document_loaders import PyPDFLoader
-
+import langchain
+langchain.verbose = True
 
 set_llm_cache(SQLiteCache(database_path=".langchain.db"))
 
-chat = ChatAnthropic(temperature=0, model_name="claude-3-haiku-20240307")
+#chat = ChatAnthropic(temperature=0, model_name="claude-3-haiku-20240307")
+chat = ChatAnthropic(temperature=0, model_name="claude-3-sonnet-20240229")
 
 def enhance_cpe_info(summary, refs):
    
@@ -33,12 +36,32 @@ def enhance_cpe_info(summary, refs):
     #ref_info = filter_and_grab_ref_data(refs)
     
     system = (
-        "You are a helpful AI bot programmed to translate CVE descriptions into short algebraic expressions contained in JSON form." +\
-            "Given the description provided, generate a mathematical statement that will determine if a product is vulnerable (for example: \"openssl < 3.0\"). Include the product name in the result. Don't include the description in the result " + \
-            "Only include version information in the algebraic result. Do not include configuration information or code" +\
-            "If there is not enough information to generate an algebreic result then just return an empty JSON object" # todo: test if it can't be determined?
+"""Translate CVE descriptions into short algebraic expressions contained in JSON form. Given the description provided, generate a mathematical statement that will determine if a product is vulnerable based on it's version.
+Return only the JSON object and not any description or configuration information. If no version information is available, then return en empty json object. Here are some examples:
+<example>
+<description>
+AUTER Controls Nova 200–220 Series with firmware version 3.3-006 and prior and BACnetstac version 4.2.1 and prior have only FTP and Telnet available for device management. Any sensitive information communicated through these protocols, such as credentials, is sent in cleartext. An attacker could obtain sensitive information such as user credentials to gain access to the system. 
+</description>
+result: {"SAUTER Controls Nova 200-220 Series": "firmware < 3.3-007", "BACnetstac": "version <= 4.2.1"}
+<example>
+
+<example>
+<description>
+An issue has been discovered in GitLab CE/EE affecting all versions starting from 11.4 prior to 15.5.7, 15.6 prior to 15.6.4, and 15.7 prior to 15.7.2. GitLab Pages allows redirection to arbitrary protocols.
+</description>
+result: :{"gitlab": "(version >= 11.4 && version < 15.5.7) || (version >= 15.6 && version < 15.6.4) || (version >= 15.7 && version < 15.7.2)"}
+<example>
+
+<example>
+<description>
+A local file deletion vulnerability in Palo Alto Networks PAN-OS software enables an authenticated administrator to delete files from the local file system with elevated privileges.
+</description>
+result: :{}
+<example>
+""".replace('{', '{{').replace('}', '}}')
+
     )
-    human = "<description>{summary}</description>" #\n<reference_info>{ref_info}</reference_info>"
+    human = "<description>\n{summary}\n</description>\n result:{{" #\n<reference_info>{ref_info}</reference_info>"
     prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
 
     chain = prompt | chat
@@ -56,36 +79,65 @@ def enhance_cpe_info(summary, refs):
         return None, None
     
     #print(info)
-    product_name = info.get("product", None)
-    if product_name is None:
+    product_names = info.keys()
+    if len(product_names) == 0:
+        print("NO product name in:" + json.dumps(info))
         return None, None
-    # Ok, we have the product name and crieria, let's lookup a cpe and contrauct a json object around it
-    system = (
-        "You are a helpful AI bot programmed to lookup CPEs from product names" +\
-            "Given the supplied product name return the CPE string that represents that product. Return only the CPE string and no explanation " + \
-            "If there is not enough information to generate a result return an empty string" # todo: test if it can't be determined?
-    )
-    human = "<product>{product_name}</product>"
-    #Pimcore's Admin Classic Bundle
-    prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
-    chain = prompt | chat
-    result = chain.invoke(
-        {
-            "product_name": product_name
-        }
-    )
+    else:
+        print(info)
+    
+    nodes = []
+    meta_info = []
+    for product_name in product_names:
+        # Ok, we have the product name and crieria, let's lookup a cpe and contrauct a json object around it
+        system = (
+"""
+You are a helpful AI bot programmed to lookup CPEs from product names
+Given the supplied product name return the CPE string that represents that product. Return only the CPE string and no explanation
+If there is not enough information to generate a result return an empty string
+"""
+        )
+        human = "<product>{product_name}</product>"
+        #Pimcore's Admin Classic Bundle
+        prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
+        chain = prompt | chat
+        result = chain.invoke(
+            {
+                "product_name": product_name
+            }
+        )
 
-    #print(result)
-    cpe = result.content
-    if len(cpe) == 0:
+        #print(result)
+        cpe = result.content
+        if len(cpe) == 0:
+            continue
+        
+        # massage from old CPE string to new cpeString
+        if cpe.startswith("cpe:/a"):
+            cpe_split =  = cpe.split(":")
+            if len(cpe_split) >= 4:
+                cpe = f"cpe:2.3:a:{cpe_split[0]}:{cpe_split[1]}:-:*:*:*:*:*:*:*"
+    
+        condition =  info.get(product_name) #info.get("expression", None) or info.get("condition", None) or info.get("version", None)
+        meta_info.append({"cpe": cpe, "condition": condition, "product_name":product_name, "cve_summary": summary,"meta": json.dumps(info)})
+
+    
+        node = create_nvd_node(cpe, condition, product_name=product_name)
+        nodes.append(node)
+    
+    if len(nodes) == 0:
         return None, None
-    
-    #TODO turn this into something like the NVD would
-    condition =  info.get("expression", None) or info.get("condition", None) or info.get("version", None)
-    meta_info = {"cpe": cpe, "condition": condition, "product_name":product_name, "cve_summary": summary,"meta": json.dumps(info)}
-    #print(meta_info)
-    
-    return create_nvd_node(cpe, condition, product_name=product_name), meta_info
+    elif len(nodes) == 1:
+        return nodes[0], meta_info
+    else:
+        # combine into one node with children
+        parent_node = {
+                    "operator" : "OR",
+                    "children" : nodes ,
+                    "cpe_match" : [],
+                    "ae:confidence":nodes[0].get("ae:confidence","")
+                }
+        return parent_node, meta_info
 
 def filter_and_grab_ref_data(refs):
     """
@@ -158,14 +210,12 @@ def create_nvd_node(cpe_string, condition, product_name):
             dist, nearest_cpe = find_closest_cpe_prefixs(cpe_to_cpe_prefix(cpe))[0]
             # TODO this is just a gut number. run some tests on it and fine tune
             # But we need a simple catch that avoid an LLM call if it's REALLLLY close or REALLY FAR. No need to spend money if it's obvious
-            if dist < 0.067 or (dist <0.14 and does_ai_think_this_matches(product_name, f"cpe:2.3:a:{nearest_cpe}:-:*:*:*:*:*:*:*")):
+            nearest_cpe_str = f"cpe:2.3:a:{nearest_cpe}:-:*:*:*:*:*:*:*"  # TODO include :a: vs :o: vs :h: in cpe set
+            if dist < 0.067 or (dist <0.33 and does_ai_think_this_matches(product_name, nearest_cpe_str)):
                 #print(f"{cpe} - medium :/ {nearest_cpe} at {dist}")
                 confidence = "medium"
                 # replace with the one we found
-                cpe_split = cpe.split(":")
-                ncpe_split = nearest_cpe.split(":")
-                cpe_split[3], cpe_split[4] = ncpe_split[0], ncpe_split[1]
-                cpe = ":".join(cpe_split)
+                cpe = nearest_cpe_str
             else:
                 pass
                 #print(f"{cpe} - none :/ closest was {nearest_cpe} at {dist} ")
@@ -232,6 +282,7 @@ def cpe_to_cpe_prefix(cpe):
 def find_closest_cpe_prefixs(cpe_prefix, max_match=3):
     results = []
     cmp = textdistance.JaroWinkler()
+    cpe_prefix = cpe_prefix[::-1] # reverse Jaro winkler to prioritize product name
     for x in vendor_product_set:
         if len(results) < max_match:
             results.append([cmp.distance(cpe_prefix,x), x])
@@ -242,7 +293,9 @@ def find_closest_cpe_prefixs(cpe_prefix, max_match=3):
                     y[0] = dist
                     y[1] = x
                     break
-    return results
+
+    # reverse back so we don't get CPEs backwards
+    return [(x[0], x[1][::-1]) for x in results]
 
 
 
@@ -251,20 +304,21 @@ print("Loading cpe lookup")
 vendor_product_set = set()
 
 if recalc_cpe_set: # TODO Or of cached doesnt exist
+    new_vendor_product_set = set()
     with open("./NVD_DATA/nvdcpematch-1.0.json", "r") as f:
         j = json.load(f)["matches"]
         for m in j:
             cpe_prefix = cpe_to_cpe_prefix(m["cpe23Uri"])
-            #print(cpe_prefix)
-            vendor_product_set.add(cpe_prefix)
+            new_vendor_product_set.add(cpe_prefix)
     with open("./NVD_DATA/cpe_set.json", "w") as f:
-        json.dump([x for x in vendor_product_set], fp=f)
-else :
-    with open("./NVD_DATA/cpe_set.json", "r") as f:
-        j = json.load(f)
-        for cpe_prefix in j:
-            vendor_product_set.add(cpe_prefix)
-
+        json.dump([x for x in new_vendor_product_set], fp=f)
+        del new_vendor_product_set
+# load the cpe set from our cache
+with open("./NVD_DATA/cpe_set.json", "r") as f:
+    j = json.load(f)
+    for cpe_prefix in j:
+        cpe_prefix = cpe_prefix[::-1] # reverse Jaro winkler to prioritize product name
+        vendor_product_set.add(cpe_prefix)
 
 print("Loading file to enhance:")
 i=0
@@ -280,8 +334,7 @@ with open(meta_info_output_file, "w") as meta_out:
         for cve in j["CVE_Items"]:
             try:
                 cve_id = cve.get("cve",{}).get("CVE_data_meta",{}).get("ID","")
-                if cve_id != "CVE-2023-1046":
-                    continue
+
                 if len(cve["configurations"]["nodes"]) > 0 and not overwrite_cves_with_cpes:
                     continue
                 i = i + 1
@@ -296,11 +349,16 @@ with open(meta_info_output_file, "w") as meta_out:
                     continue
 
                 refs = cve.get("cve",{}).get("references",{}).get("reference_data",[])
+                old_nodes = cve["configurations"]["nodes"]
+                print(cve_id)
                 node, meta_info = enhance_cpe_info(summary, refs)
                 if node is None:
-                    print("Node returend was None :( )")
+                    if meta_info is None:
+                        meta_info = [{}]
+                    #print("Node returend was None :( )")
+                    meta_w.writerow([cve_id, summary,json.dumps(old_nodes),json.dumps([node_to_cpes(x) for x in old_nodes]),"",meta_info[0].get("product_name",""), "", "", meta_info[0].get("condition","")])
                     continue
-                old_nodes = cve["configurations"]["nodes"]
+                
                 cve["configurations"]["nodes"] = [node]
                 
                
@@ -310,11 +368,12 @@ with open(meta_info_output_file, "w") as meta_out:
                 
                 #print(meta_info.get("condition",""))
                 #print(json.dumps(node))
-                meta_w.writerow([cve_id, summary,json.dumps(old_nodes),json.dumps([node_to_cpes(x) for x in old_nodes]),json.dumps([node_to_cpes(node)]),meta_info.get("product_name",""),[node], confidence, meta_info.get("condition","")])
+                print(node)
+                meta_w.writerow([cve_id, summary,json.dumps(old_nodes),json.dumps([node_to_cpes(x) for x in old_nodes]),json.dumps([node_to_cpes(node)]),meta_info[0].get("product_name",""),[node], confidence, meta_info[0].get("condition","")])
                 time.sleep(delay_every_secs)
             except Exception as e:
                 print("!!!!!!!!!!! EXCEPTION! ")
-                print(e)
+                traceback.print_exc()
                 print("Above from CVE="+str(cve_id))
                 #raise e # disable when not debugging an exception
                 # move on so we don't crash everything
