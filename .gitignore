@@ -1,3 +1,6 @@
 *.db
 *.swp
 NVD_DATA
+__pycache__
+*.csv
+.~lock*

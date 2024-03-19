@@ -1,4 +1,6 @@
 langchain==0.1.12
 langchain-anthropic==0.1.4
 textdistance==4.6.1
-
+TatSu==5.8.3
+pypdf==4.1.0
+requests==2.31.0
