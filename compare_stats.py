@@ -2,8 +2,8 @@ import csv
 import json 
 import traceback
 
-stats_filename = "./stats-2023-bak-1000-examples1.csv"
-
+#stats_filename = "./stats-2023-bak-1000-examples1.csv"
+stats_filename = "./stats-2023.csv"
 
 def cpe_prefix(cpe):
     # massage from old CPE string to new cpeString

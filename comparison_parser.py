@@ -41,7 +41,7 @@ factor
     ;
 
 
-word = /[a-zA-Z0-9\.\_\-]+/;
+word = /[a-zA-Z0-9\.\_\-\*]+/;
 """
 
 
@@ -167,9 +167,13 @@ def main():#
     # ast = parser.parse('(GRCFND_A < V1200) || (GRCFND_A < V8100) || (GRCPINW < V1100_700) || (GRCPINW < V1100_731) || (GRCPINW < V1200_750)',
     #             semantics=NodeMatchSemantics("cpe:::")
     #             )
-    ast = parser.parse('(version > 11.4 && version < 15.5.7) || (version > 15.6 && version < 15.6.4) || (version > 15.7 && version < 15.7.2)',
+    test = "( v > unspecified &&   v < 20.4R3-S8-EVO  ) || ( v > 21.1R1-EVO &&   v < 21.1*  ) || ( v > 21.2 &&   v < 21.2R3-S6-EVO  ) || ( v > 21.3 &&   v < 21.3R3-S5-EVO  ) || ( v > 21.4 &&   v < 21.4R3-S4-EVO  ) || ( v > 22.1 &&   v < 22.1R3-S4-EVO  ) || ( v > 22.2 &&   v < 22.2R3-S2-EVO  ) || ( v > 22.3 &&   v < 22.3R2-S2-EVO  ) || ( v > 22.3 &&   v < 22.3R3-S1-EVO  ) || ( v > 22.4 &&   v < 22.4R2-S1-EVO  ) || ( v > 22.4 &&   v < 22.4R3-EVO  ) || ( v > 23.1 &&   v < 23.1R1-S1-EVO  ) || ( v > 23.1 &&   v < 23.1R2-EVO  )"
+    ast = parser.parse(test,
                 semantics=NodeMatchSemantics("cpe:::")
                 )
+    # ast = parser.parse('(version > 11.4 && version < 15.5.7) || (version > 15.6 && version < 15.6.4) || (version > 15.7 && version < 15.7.2)',
+    #             semantics=NodeMatchSemantics("cpe:::")
+    #             )
     # ast = parser.parse('authenticated_user && access_to_web_interface && can_read_local_files',
     #             semantics=NodeMatchSemantics("cpe:::")
     #             )
