@@ -17,6 +17,7 @@ class MatchMetadata():
 
 class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json"
     def __init__(self, nvdcpematch_file, cache_file, overwrite_cache):
+        self._cmp = textdistance.JaroWinkler()
         print("Loading cpe lookup")
         self.vendor_product_set = set()
         if overwrite_cache: # TODO Or of cached doesnt exist
@@ -34,27 +35,45 @@ class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json
         with open(cache_file, "r") as f:
             j = json.load(f)
             for cpe_prefix in j:
-                cpe_prefix = cpe_prefix[::-1] # reverse Jaro winkler to prioritize product name
+                cpe_prefix = cpe_prefix
                 self.vendor_product_set.add(cpe_prefix)
             print("/Loading cpe lookup")
                 
     
     @staticmethod
     def cpe_to_cpe_prefix(cpe):
-        return ":".join(cpe.split(":")[3:5])
+        return ":".join(cpe.split(":")[2:5])
+    
+    @staticmethod
+    def set_version_to_cpe(cpe, version):
+        split = cpe.split(":")
+        return ":".join(split[0:5] + [str(version)] + split[6:])
     
     def is_valid_cpe(self, cpe):
-        return self.cpe_to_cpe_prefix(cpe) in self.vendor_product_set
+        cpe_prefix = self.cpe_to_cpe_prefix(cpe)
+        return cpe_prefix in self.vendor_product_set
+    
+
+    def _dist(self, a, b):
+        # value higher index much higher index are[a|h|o, vendor, product]
+        a_s = a.split(":")
+        b_s = b.split(":")
+
+        score = 0.0
+        for i in range( len(a_s)):
+            score += (self._cmp.normalized_distance(a_s[i], b_s[i]) * (i) * 10)
+
+        return score
     
     def find_closest_cpe(self, cpe, max_match=3):
         results = []
-        cmp = textdistance.JaroWinkler()
-        cpe_prefix = self.cpe_to_cpe_prefix(cpe)[::-1] # reverse Jaro winkler to prioritize product name
+        
+        cpe_prefix = self.cpe_to_cpe_prefix(cpe) # reverse Jaro winkler to prioritize product name
         for x in self.vendor_product_set:
             if len(results) < max_match:
-                results.append([cmp.distance(cpe_prefix,x), x])
+                results.append([self._dist(cpe_prefix,x), x])
             else:
-                dist = cmp.distance(cpe_prefix,x)
+                dist = self._dist(cpe_prefix,x)
                 for y in results:
                     if y[0] > dist:
                         y[0] = dist
@@ -62,7 +81,7 @@ class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json
                         break
 
         # reverse back so we don't get CPEs backwards
-        return [(x[0], f"cpe:2.3:a:{x[1][::-1]}:-:*:*:*:*:*:*:*") for x in results]
+        return [(x[0], f"cpe:2.3:{x[1]}:-:*:*:*:*:*:*:*") for x in results]
     
 class CveOrgLookup():
     
@@ -106,6 +125,8 @@ class EnhanceUtils():
         """
         wrap nodes if more than one in an OR parent node
         """
+        # clean nodes
+        nodes = [x for x in nodes if x is not None]
         if len(nodes) == 0:
             return None
         elif len(nodes) == 1:
@@ -120,9 +141,9 @@ class EnhanceUtils():
             return parent_node
         
 
-    def get_cpe_from_product_name(self, vendor_name, product_name):
+    def get_cpe_from_product_name(self, vendor_name, product_name, license=None):
         confidence = "none"
-        cpe = self._llm.lookup_cpes(vendor_name,product_name)[0]
+        cpe = self._llm.lookup_cpes(vendor_name,product_name, license)[0]
         if self._cpe_lookup.is_valid_cpe(cpe):
             confidence = "high"
             #print(f"{cpe} - high")
@@ -130,10 +151,11 @@ class EnhanceUtils():
             dist, nearest_cpe = self._cpe_lookup.find_closest_cpe(cpe)[0]
             # TODO this is just a gut number. run some tests on it and fine tune
             # But we need a simple catch that avoid an LLM call if it's REALLLLY close or REALLY FAR. No need to spend money if it's obvious
-        
-            if dist < 0.067 or (dist <0.33 and self._llm.does_ai_think_this_matches(product_name, nearest_cpe)):
-                #print(f"{cpe} - medium :/ {nearest_cpe} at {dist}")
-                confidence = "medium"
+            product_names_exactly_eq = nearest_cpe.split(":")[4] == cpe.split(":")[4]
+            print(product_names_exactly_eq,  nearest_cpe, cpe)
+            if product_names_exactly_eq or dist < 0.067 or (dist <0.33 and self._llm.does_ai_think_this_matches(product_name, nearest_cpe)):
+                confidence = "medium" if self._cpe_lookup.is_valid_cpe(nearest_cpe) else "low"
+                print(f" AI MATCH -- {cpe} - {nearest_cpe} at {dist} with {confidence}")
                 # replace with the one we found
                 cpe = nearest_cpe
         
@@ -188,17 +210,22 @@ class EnhanceUtils():
                 exact_op = "==" if status == "affected" else "!="
                 less_than = v.get("lessThan", None)
                 less_than_eq = v.get("lessThanOrEqual", None)
+                version = v.get("version", None)
+
                 if less_than_eq is not None: # save some logic by reusing less_than
                     order_op += "="
                     less_than = less_than_eq
+                
+                if version.startswith("<"): # sometimes versions startswith < instead of actual lessthan
+                    less_than = version[1:]
+                    version = None
 
-                version = v.get("version", None)
                 if version is not None:
                     version = version.strip().replace(" ","")
 
                 if less_than is not None:
                     v_str = ""
-                    if version is not None and version.strip() != "*":  # for versions starting at version swap order
+                    if version is not None and version != "*" and version != "n/a":  # for versions starting at version swap order
                         v_str = "v " + ("> " if order_op.startswith("<") else "< ") + version + " && "
 
                     lt_list = []
@@ -211,7 +238,8 @@ class EnhanceUtils():
                 elif version is not None:
                     # only add affected versions here
                     if status == "affected":
-                        expression.append(f"(v {exact_op} {version})")
+                        for va in version.split(","):
+                            expression.append(f"(v {exact_op} {va})")
 
             condition = " || ".join(expression)
             nodes.append( nodes.append(turn_alg_into_nodes(condition, cpe)))
@@ -278,6 +306,40 @@ class EnhanceUtils():
                       llm_used=True
                       )
 
+# def filter_and_grab_ref_data(refs):
+#     """
+#     filter and grab the ref data. Try to only include text based advisory data and not like patches and stuff
+#     TODO: different loaders for PDFs
+#     """
+
+#     def is_good_ref(ref):
+#         url, name = ref["url"], ref["name"]
+#         if url.endswith(".sh") or url.endswith(".patch"):
+#             return False
+#         if "changeset" in url or "blob" in url:
+#             return False
+#         if "advisories" in url or "support" in url or "bulletin" in url:
+#             return True
+#         if "advisory" in name:
+#             return True
+#         # assume bad for now. Maybe we make this better and assume true?
+#         return False
+
+#     try: 
+#         filtered = [x for x in refs if is_good_ref(x)]
+    
+#         if len(filtered) == 0:
+#             return ""
+        
+#         # Just pick the first good one for now. Maybe we provde for context to larger models later
+#         ref = filtered[0]
+#         loader = WebBaseLoader(ref["url"])
+#         return loader.load()[0].page_content
+#         #html_doc = requests.get(ref["url"])
+#         #soup = BeautifulSoup(html_doc.text, 'html.parser')
+#     except Exception as e:
+#         print("Error in grabbing ref info " + str(e))
+#         return ""
 
 class MetaLog():
     def __init__(self,meta_out) -> None:

@@ -73,9 +73,11 @@ class LLM_Utils():
             print("Decode error:"+result.content)
         return None
     
-    def lookup_cpes(self, vendor_name, product_name):
+    def lookup_cpes(self, vendor_name, product_name, license_name=None):
         system = (CPE_LOOKUP_PROMPT)
-        human = (f"<vendor>{vendor_name}</vendor>\n" if vendor_name is not None else "") + "<product>{product_name}</product>" 
+        human = (f"<vendor>{vendor_name}</vendor>\n" if vendor_name is not None else "") \
+                            + "<product>{product_name}</product>" \
+                                + (f"\n<license>{license_name}</license>" if license_name is not None else "")
         #Pimcore's Admin Classic Bundle
         prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
         chain = prompt | self.chat
@@ -102,6 +104,6 @@ class LLM_Utils():
             }
         )
 
-        print(F"asking AI does {nearest_cpe} == {product_name}")
-        print(result.content)
+        #print(F"asking AI does {nearest_cpe} == {product_name}")
+        #print(result.content)
         return result.content.strip().lower() == "yes"

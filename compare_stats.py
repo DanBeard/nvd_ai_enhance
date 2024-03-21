@@ -3,7 +3,7 @@ import json
 import traceback
 
 #stats_filename = "./stats-2023-bak-1000-examples1.csv"
-stats_filename = "./stats-2023.csv"
+stats_filename = "./stats-2023-bak-1000-aho1.csv"
 
 def cpe_prefix(cpe):
     # massage from old CPE string to new cpeString
@@ -48,7 +48,6 @@ with open(stats_filename,'r') as sfile:
         # turn each into just the first parts of the cpe, ignoring more specific metrics like editions
         p_cpe, i_cpe = set(cpe_prefix(x) for x in p_cpe), set(cpe_prefix(x) for x in i_cpe)
 
-
         if len(p_cpe ^ i_cpe) == 0:
             num_cpe_completely_right += 1
         elif len(i_cpe) == 0 and len(p_cpe) > 0:
@@ -65,16 +64,19 @@ with open(stats_filename,'r') as sfile:
             num_cpe_partially_right +=1
         else:
             p2_cpe, i2_cpe = set(x.split(":")[-1] for x in p_cpe), set(x.split(":")[-1] for x in i_cpe)
+            confidence = line.get("Inferred Nodes Confidence","--")
             if(len(p2_cpe ^ i2_cpe) == 0):
                 num_cpe_vendor_wrong += 1
                 print("VENDOR WRONG------------------------" + cve_id)
                 print(p_cpe)
                 print(i_cpe)
+                print(confidence)
                 print("/VENDOR WRONG------------------------")
             else:
                 print("WRONG------------------------" + cve_id)
                 print(p_cpe)
                 print(i_cpe)
+                print(confidence)
                 print("/WRONG------------------------")
                 num_cpe_completely_wrong +=1
 
