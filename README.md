@@ -24,16 +24,22 @@ Current technique is to use simple instruction prompts with Anthropics Claude Ha
 - python > 3.10
 - `pip install -r requirements.txt`
 
-## Data
+## Example Enhancement Data
+Check out /example_data/ for an auto-enhanced version of recent CVE data. Accuracy is unknown. 
+
+
+## Stat Data
 
 Was only tested on 980 CVEs from 2023 with known enhancements.  Full metadata output for each CVE is in the test_data folder. Stats can be cndensed down with `compare_stats.py`
-Takeaway is a roughly 60% success rate with cpe enhancement (64% if partial matches count as success). or :
+Takeaway is a roughly 79% success rate with cpe enhancement (~90% if partial matches count as success). or :
 ```
-Num correct:548
-Num partial:76
-Num vendor_only wrong:115
-Num wrong:241
-total:980
+Num correct:768
+Num partial:109
+Num empty:0
+Num vendor_only wrong:18
+Num wrong:80
+Num errors:0
+total:975
 ```
 
 ## Subjective Takeaways

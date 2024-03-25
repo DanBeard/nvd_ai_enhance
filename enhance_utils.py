@@ -5,6 +5,8 @@ import csv
 from dataclasses import dataclass
 from comparison_parser import turn_alg_into_nodes
 from enhance_llm_utils import LLM_Utils
+from cpe_mapping_generator import build_cveorg_to_cpe_lookup
+
 
 @dataclass
 class MatchMetadata():
@@ -20,7 +22,7 @@ class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json
         self._cmp = textdistance.JaroWinkler()
         print("Loading cpe lookup")
         self.vendor_product_set = set()
-        if overwrite_cache: # TODO Or of cached doesnt exist
+        if overwrite_cache:  # TODO Or if cached doesnt exist
             new_vendor_product_set = set()
             with open(nvdcpematch_file, "r") as f:
                 j = json.load(f)["matches"]
@@ -52,7 +54,6 @@ class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json
     def is_valid_cpe(self, cpe):
         cpe_prefix = self.cpe_to_cpe_prefix(cpe)
         return cpe_prefix in self.vendor_product_set
-    
 
     def _dist(self, a, b):
         # value higher index much higher index are[a|h|o, vendor, product]
@@ -68,7 +69,7 @@ class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json
     def find_closest_cpe(self, cpe, max_match=3):
         results = []
         
-        cpe_prefix = self.cpe_to_cpe_prefix(cpe) # reverse Jaro winkler to prioritize product name
+        cpe_prefix = self.cpe_to_cpe_prefix(cpe)  # reverse Jaro winkler to prioritize product name
         for x in self.vendor_product_set:
             if len(results) < max_match:
                 results.append([self._dist(cpe_prefix,x), x])
@@ -82,10 +83,11 @@ class CpeLookup():  # "./NVD_DATA/nvdcpematch-1.0.json" "./NVD_DATA/cpe_set.json
 
         # reverse back so we don't get CPEs backwards
         return [(x[0], f"cpe:2.3:{x[1]}:-:*:*:*:*:*:*:*") for x in results]
-    
+
+
 class CveOrgLookup():
-    
-    def __init__(self,zip_loc):
+
+    def __init__(self, zip_loc):
         self._zip_loc = zip_loc
         self._zip = zipfile.ZipFile(zip_loc)
 
@@ -106,6 +108,7 @@ class EnhanceUtils():
         self._llm = LLM_Utils()
         self._cpe_lookup = cpe_lookup
         self._cve_lookup = cve_lookup
+        self._nvdorg_to_cpe = build_cveorg_to_cpe_lookup(cve_lookup)
 
     @staticmethod
     def _massage_cpe(cpe):
@@ -143,17 +146,26 @@ class EnhanceUtils():
 
     def get_cpe_from_product_name(self, vendor_name, product_name, license=None):
         confidence = "none"
-        cpe = self._llm.lookup_cpes(vendor_name,product_name, license)[0]
-        if self._cpe_lookup.is_valid_cpe(cpe):
+
+        # first see if we can get an exact match from our cveorg lookup table
+        nvd_org_cpes_set = self._nvdorg_to_cpe.get((vendor_name, product_name), set())
+        nvd_org_cpes = [f"cpe:2.3:{x}:-:*:*:*:*:*:*:*" for x in nvd_org_cpes_set] # set -> list and formatted
+        if len(nvd_org_cpes) == 1:
+            confidence = "high"
+            return nvd_org_cpes[0], confidence
+
+        cpe = self._llm.lookup_cpes(vendor_name, product_name, license, potential_cpes=nvd_org_cpes)[0]
+        if cpe in nvd_org_cpes or self._cpe_lookup.is_valid_cpe(cpe):
             confidence = "high"
             #print(f"{cpe} - high")
         else:
             dist, nearest_cpe = self._cpe_lookup.find_closest_cpe(cpe)[0]
             # TODO this is just a gut number. run some tests on it and fine tune
             # But we need a simple catch that avoid an LLM call if it's REALLLLY close or REALLY FAR. No need to spend money if it's obvious
+            print(f"cpe ======== {cpe} --- {nearest_cpe}")
             product_names_exactly_eq = nearest_cpe.split(":")[4] == cpe.split(":")[4]
             print(product_names_exactly_eq,  nearest_cpe, cpe)
-            if product_names_exactly_eq or dist < 0.067 or (dist <0.33 and self._llm.does_ai_think_this_matches(product_name, nearest_cpe)):
+            if product_names_exactly_eq or dist < 2 or (self._llm.does_ai_think_this_matches(product_name, nearest_cpe)):
                 confidence = "medium" if self._cpe_lookup.is_valid_cpe(nearest_cpe) else "low"
                 print(f" AI MATCH -- {cpe} - {nearest_cpe} at {dist} with {confidence}")
                 # replace with the one we found

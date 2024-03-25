@@ -1,9 +1,12 @@
 import csv
+import sys
 import json 
 import traceback
 
 #stats_filename = "./stats-2023-bak-1000-examples1.csv"
-stats_filename = "./stats-2023-bak-1000-aho1.csv"
+stats_filename = "./stats-2023.csv"
+
+csv.field_size_limit(int(sys.maxsize/100))
 
 def cpe_prefix(cpe):
     # massage from old CPE string to new cpeString
